@@ -1,7 +1,7 @@
 ---
 title: "CEVE 543 Fall 2025 Lab 7: Bias Correction Implementation"
 subtitle: "Delta method and quantile mapping for temperature bias correction"
-author: CEVE 543 Fall 2025
+author: Alisa Sannikova
 date: "2025-10-24"
 type: "lab"
 module: 2
@@ -277,8 +277,101 @@ Follow these steps:
 :::
 
 ```{julia}
-# Your code here
+#create a dataframe
+monthly_bias = @chain leftjoin(gcm_monthly, obs_monthly; on = :month, makeunique = true) begin
+    rename!(:mean_temp => :gcm_mean, :mean_temp_1 => :obs_mean)
+    @mutate(bias = gcm_mean .- obs_mean)
+end
 ```
+
+```{julia}
+# Create a new figure
+fig = Figure(resolution = (800, 400))
+
+# Add an axis
+ax = Axis(fig[1, 1];
+    xticks = (1:12, ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]),
+    xlabel = "Month",
+    ylabel = "Temperature Bias (°C)",
+    title  = "Monthly Mean Temperature Bias"
+)
+
+# Plot bars
+barplot!(ax, monthly_bias.month, monthly_bias.bias, color = :steelblue)
+
+# Add a horizontal line at 0
+hlines!(ax, 0, color = :black, linewidth = 1.5)
+
+# Show the figure (last line ensures it renders)
+fig
+```
+
+```{julia}
+function apply_delta_method(gcm_temps, gcm_dates, monthly_bias_df)
+    # Create vector to store corrected temperatures
+    corrected_temps = similar(gcm_temps)
+
+    # Loop through each temperature and date
+    for i in eachindex(gcm_temps)
+        m = month(gcm_dates[i])  # extract month number (1–12)
+        # find the bias for that month
+        bias_val = monthly_bias_df.bias[monthly_bias_df.month .== m][1]
+        # subtract bias from model temperature
+        corrected_temps[i] = gcm_temps[i] - bias_val
+    end
+
+    return corrected_temps
+end
+```
+
+
+```{julia}
+df_ssp370_near.temp_delta = apply_delta_method(
+    df_ssp370_near.temp,
+    df_ssp370_near.date,
+    monthly_bias
+)
+```
+
+
+```{julia}
+near_monthly_raw = @chain df_ssp370_near begin
+    @group_by(month)
+    @summarize(mean_temp_raw = mean(temp))
+end
+
+near_monthly_delta = @chain df_ssp370_near begin
+    @group_by(month)
+    @summarize(mean_temp_delta = mean(temp_delta))
+end
+
+```
+
+```{julia}
+fig = Figure(resolution = (900, 420))
+ax = Axis(fig[1, 1];
+    xticks = MONTH_LABELS,  # uses the provided constant
+    xlabel = "Month",
+    ylabel = "Temperature (°C)",
+    title = "Delta Method: Annual Cycle for SSP3-7.0 Near-Term (2020–2040)"
+)
+
+# Historical Obs (blue)
+lines!(ax, obs_monthly.month, obs_monthly.mean_temp,
+    color = :blue, label = "Historical Obs", linewidth = 2)
+
+# GCM Raw (coral/red)
+lines!(ax, near_monthly_raw.month, near_monthly_raw.mean_temp_raw,
+    color = :coral, label = "GCM Raw", linewidth = 2)
+
+# Delta Corrected (green dashed)
+lines!(ax, near_monthly_delta.month, near_monthly_delta.mean_temp_delta,
+    color = :green, linestyle = :dash, label = "Delta Corrected", linewidth = 2)
+
+axislegend(ax, position = :rb)  # bottom-right legend
+fig
+```
+
 
 ### Task 3: Implement Quantile-Quantile Mapping
 
@@ -311,7 +404,67 @@ Follow these steps:
 :::
 
 ```{julia}
-# Your code here
+# Extract temperature vectors
+obs_hist_temps = Float64.(df_obs_hist.TAVG)
+gcm_hist_temps = Float64.(df_gcm_hist.temp)
+
+ecdf_obs = ecdf(obs_hist_temps)
+ecdf_gcm = ecdf(gcm_hist_temps)
+```
+
+```{julia}
+function apply_qqmap_empirical(gcm_temps, ecdf_gcm, obs_hist_temps)
+    # result vector (Float64)
+    corrected_temps = similar(gcm_temps, Float64)
+
+    for i in eachindex(gcm_temps)
+        # percentile of the model value in the model's historical distribution
+        p = ecdf_gcm(gcm_temps[i])
+
+        # clamp to avoid exactly 0 or 1 (safer interpolation at the tails)
+        p = clamp(p, 0.001, 0.999)
+
+        # map to the same percentile in the observed historical distribution
+        corrected_temps[i] = quantile(obs_hist_temps, p)
+    end
+
+    return corrected_temps
+end
+```
+
+```{julia}
+# Apply QQ-mapping correction to the future GCM data
+df_ssp370_near.temp_qqmap = apply_qqmap_empirical(
+    df_ssp370_near.temp,
+    ecdf_gcm,
+    obs_hist_temps
+)
+```
+
+```{julia}
+# Define percentiles
+percentiles = 0.01:0.01:0.99
+
+# Compute quantiles for observed and model historical data
+obs_quantiles = quantile(obs_hist_temps, percentiles)
+gcm_hist_quantiles = quantile(gcm_hist_temps, percentiles)
+
+# Create the figure
+fig = Figure(resolution = (600, 600))
+ax = Axis(fig[1, 1],
+    xlabel = "Observed Quantiles (°C)",
+    ylabel = "GCM Quantiles (°C)",
+    title = "QQ Plot: Historical GCM vs Observed",
+    aspect = DataAspect()   # makes it square
+)
+
+# Scatter plot of quantiles
+scatter!(ax, obs_quantiles, gcm_hist_quantiles, color = :steelblue, markersize = 6)
+
+# 1:1 reference line (perfect match)
+lines!(ax, [-20, 40], [-20, 40], color = :black, linestyle = :dash)
+
+fig
 ```
 
 ### Task 4: Compare Methods
@@ -337,8 +490,41 @@ After creating the plot, examine it carefully and consider:
 :::
 
 ```{julia}
-# Your code here
+near_monthly_qqmap = @chain df_ssp370_near begin
+    @group_by(month)
+    @summarize(mean_temp_qqmap = mean(temp_qqmap))
+end
 ```
+
+```{julia}
+# Create figure and axis
+fig = Figure(resolution = (900, 420))
+ax = Axis(fig[1, 1],
+    xlabel = "Month",
+    ylabel = "Temperature (°C)",
+    title = "Annual Cycle Comparison: All Methods (Near-term 2020–2040)",
+    xticks = MONTH_LABELS,   # use provided month names
+)
+
+# Plot lines for each dataset
+lines!(ax, obs_monthly.month, obs_monthly.mean_temp,
+    color = :black, linewidth = 2.5, label = "Historical Obs")
+
+lines!(ax, near_monthly_raw.month, near_monthly_raw.mean_temp_raw,
+    color = :coral, linewidth = 2, label = "Raw GCM")
+
+lines!(ax, near_monthly_delta.month, near_monthly_delta.mean_temp_delta,
+    color = :green, linewidth = 2, linestyle = :dash, label = "Delta")
+
+lines!(ax, near_monthly_qqmap.month, near_monthly_qqmap.mean_temp_qqmap,
+    color = :purple, linewidth = 2, linestyle = :dot, label = "QQ-map")
+
+# Add legend
+axislegend(ax, position = :lt)
+
+fig
+```
+
 
 ### Task 5: Reflection
 
@@ -356,11 +542,11 @@ Write brief responses (2-3 sentences each) to the following questions:
 
 #### Method Selection for Urban Heat Management
 
-*Your response here*
+The models showed fairly similar results. However, I believe that the delta method should be used, as it better accounts for long-term climate change shifts. In contrast, QQ-mapping could incorrectly attribute a fixed percentile relationship to a distribution that is constantly changing. Therefore, for long records such as 40 years, the delta method is more appropriate.
 
 #### Appropriateness of QQ-Mapping for Temperature
 
-*Your response here*
+The QQ method better represents extreme events, allowing short-term (e.g., weekly) variations to be modeled more accurately.
 
 ## References
 
