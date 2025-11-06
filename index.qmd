@@ -41,8 +41,6 @@ execute:
 code-overflow: wrap
 code-line-numbers: false
 code-block-font-size: "0.85em"
-
-bibliography: ../../references.bib
 ---
 
 ## Background and Goals
@@ -550,5 +548,4 @@ The QQ method better represents extreme events, allowing short-term (e.g., weekl
 
 ## References
 
-::: {#refs}
-:::
+
