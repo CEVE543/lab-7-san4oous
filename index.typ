@@ -1074,11 +1074,7 @@ The QQ method better represents extreme events, allowing short-term (e.g., weekl
 
 = References
 <references>
-#block[
-] <refs>
 
 
 
-
-#bibliography("../../references.bib")
 
